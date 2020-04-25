@@ -1,3 +1,6 @@
+# We aren't checking in tfvars in this example.
+*.tfvars
+
 # Local .terraform directories
 **/.terraform/*
 
