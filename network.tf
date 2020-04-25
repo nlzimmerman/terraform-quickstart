@@ -225,12 +225,12 @@ resource aws_security_group_rule allow_egress {
 }
 
 # This output is just diagnostic, in production you probably wouldn't want it unless
-# you turned networking into its own module. 
+# you turned networking into its own module.
 output ordered_availability_zones {
   value = local.availability_zones
 }
 
-output private_networks {
+output network_info {
   value = {
     for i in range(local.az_count): local.availability_zones[i] =>
     {

@@ -47,16 +47,40 @@ AWS networking is a bit confusing. At a high level
   - Define route tables by defining the route table, adding rules to it, and then associate it with one or more subnets. Route tables are global across VPCs so it's perfectly possible to, e.g. route to a NAT gateway in a different AZ. Take care not to do that, unless you know why you want to.
 6. You also need security groups: all inbound traffic is blocked by default, and while outbound traffic is permitted, [terraform will remove that egress rule when it makes security groups](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/security_group).
 
-I've declared the VPC, the routing tables, and a very simple security group in the file `network.tf`.
+I've declared the VPC, the subnets, the routing tables, and a very simple security group in the file `network.tf`.
+
+I've done something here that might be over-clever: you can specify the number of availability zones you want to use, as a number, _or_ you can specify the list of availability zones you want to use. If you specify neither, you get one availability zone. If you specify both, the list you specify takes precedence.
+
+Note: The `network_info` and `ordered_availability_zones` outputs are just for debugging — maybe it would be a real output if `network.tf` were a module, but I made it just so I could click through the AWS console and convince myself everything was set up right. Superflous outputs are clutter, so I don't imagine I'd do this in a real project.
 
 ## Virtual Machines
 
 You may or may not actually want VMs in your network — we're deploying Lambda functions here, after all, but it's a good, convenient way to test that everything is working.
 
-I've declared a few small Ubuntu VMs, one in each subnet. We have two subnets per availability zone so that means at least two VMs. You sould be able to login to the public VMs from anywhere in the world using the SSH public key you specified
+I've declared a few small Ubuntu VMs, one in each subnet. We have two subnets per availability zone so that means at least two VMs. You sould be able to login to the public VMs from anywhere in the world using the SSH public key you specified.
 
 ```bash
-ssh -i mykey.pem ubuntu@3.137.185.193
+ssh -A -i mykey.pem ubuntu@3.137.185.193
+```
+Once you've logged into a machine on a public subnet, you should be able to access any of the machines, public or private, by SSHing into their private IP.
+
+```bash
+# we aren't forwrding the agent here and we're already logged in as ubuntu
+ssh 10.250.23.69
 ```
 
-I've done something here that might be over-clever: you can specify the number of availability zones you want to use, as a number, _or_ you can specify the list of availability zones you want to use. If you specify neither, you get one availability zone. If you specify both, the list you specify takes precedence.
+Internet access should work on machines with and without public IP addresses, e.g.
+
+```bash
+sudo apt update
+```
+
+A few notes:
+1. You need to specify your SSH key as a variable. Since SSH keys are long, you'll want to create a [`.tfvars` file](https://www.terraform.io/docs/language/values/variables.html), e.g.
+```
+ec2_ssh_key = "ssh-rsa [a lot of hex]"
+```
+2. The SSH key name is set using a [random pet](https://registry.terraform.io/providers/hashicorp/random/latest/docs/resources/pet) to avoid name collision. SSH keypairs have names that are normally human-specified that you use as the ID, so if the name were already in use you'd have an error.
+3. The `ec2_ip_addresses` output contains two IP addresses for public machines; the first is public, the second is private. Private machines only have a single IP address. This is intended to be human-readable but I didn't put much thought into.
+
+**You can check out just the networking and the ec2 instances by checking out the `networking` branch and running `terraform apply`.**

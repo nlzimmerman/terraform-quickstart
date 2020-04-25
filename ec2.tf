@@ -27,7 +27,8 @@ locals {
   ami = coalesce(var.ami, data.aws_ami.ubuntu.id)
 }
 
-# you could spot-check whether this is still the newest and update on a re-deploy
+# you could spot-check whether this is still the newest and use that information
+# to decide whether you need to manually update and re-deploy
 output latest_ubuntu_ami {
   value = data.aws_ami.ubuntu.id
 }
@@ -37,38 +38,18 @@ variable ec2_instance_type {
   default = "t2.nano"
 }
 
-variable ec2_instances_per_subnet {
-  type = number
-  default = 1
-}
-
-# for_each works over a map, it doesn't support
-locals {
-  # public_ec2_instance_info = [
-  #   for i in range(var.ec2_instances_per_subnet) :
-  #     [for j in range(local.az_count) : {
-  #       subnet_id = aws_subnet.public_subnets[j].id
-  #       name = "Public instance ${local.availability_zones[j]} #${i}"
-  #     }]
-  # ]
-  public_ec2_instance_info = [
-    for i in range(var.ec2_instances_per_subnet) : [
-      for j in range(local.az_count): {name = "Public instance ${local.availability_zones[j]} #${i}", subnet_id = aws_subnet.public_subnets[j].id }
-    ]
-  ]
-}
-
-output public_ec2_instance_info {
-  value = {for x in flatten(local.public_ec2_instance_info): x["name"] => x["subnet_id"]}
-}
-
+# This variable is not optional, there is no default.
 variable ec2_ssh_key {
   type = string
   description = "the SSH key to get in"
 }
 
+# key names are the primary identifiers of ssh keys — names aren't just made for you
+# in order to get a safe, random name, we use the random_pet module
 resource random_pet ssh_key_name {
-  keepers = {ssh_key = var.ec2_ssh_key}
+  keepers = {
+    ssh_key = var.ec2_ssh_key
+  }
 }
 
 resource aws_key_pair deployer {
@@ -78,7 +59,7 @@ resource aws_key_pair deployer {
 
 resource aws_instance public_instances {
   count = local.az_count
-  ami           = local.ami
+  ami = local.ami
   instance_type = var.ec2_instance_type
   subnet_id = aws_subnet.public_subnets[count.index].id
   vpc_security_group_ids = [aws_security_group.allow_ssh.id]
@@ -90,7 +71,7 @@ resource aws_instance public_instances {
 
 resource aws_instance private_instances {
   count = local.az_count
-  ami           = local.ami
+  ami = local.ami
   instance_type = var.ec2_instance_type
   subnet_id = aws_subnet.private_subnets[count.index].id
   vpc_security_group_ids = [aws_security_group.allow_ssh.id]
