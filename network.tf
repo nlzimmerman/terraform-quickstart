@@ -13,16 +13,36 @@ variable availability_zone_names {
   default = []
 }
 
+variable az_count {
+  type = number
+  default = 1
+}
+
+resource random_shuffle availability_zones {
+  input = local.valid_availability_zones
+  result_count = local.valid_az_count
+}
+
 # If you don't specify availability zones, use all of them.
 locals {
-  availability_zones = length(var.availability_zone_names) == 0 ? data.aws_availability_zones.available.names : var.availability_zone_names
+  valid_availability_zones = length(var.availability_zone_names) == 0 ? data.aws_availability_zones.available.names : var.availability_zone_names
+  valid_az_count = max(min(var.az_count, length(local.valid_availability_zones)), 1)
+  availability_zones = random_shuffle.availability_zones.result
+}
+
+output availability_zones {
+  value = random_shuffle.availability_zones.result
+}
+
+output valid_az_count {
+  value = local.valid_az_count
 }
 
 resource aws_subnet private_subnets {
   # https://www.terraform.io/docs/language/meta-arguments/count.html
   # https://www.terraform.io/docs/language/meta-arguments/for_each.html
-  count = length(local.availability_zones)
-  cidr_block = cidrsubnet("10.250.0.0/17", ceil(log(length(data.aws_availability_zones.available.names), 2)), count.index)
+  count = local.valid_az_count
+  cidr_block = cidrsubnet("10.250.0.0/17", ceil(log(length(local.availability_zones), 2)), count.index)
   vpc_id = aws_vpc.vpc.id
   map_public_ip_on_launch = false
   availability_zone = data.aws_availability_zones.available.names[count.index]
@@ -31,8 +51,8 @@ resource aws_subnet private_subnets {
 resource aws_subnet public_subnets {
   # https://www.terraform.io/docs/language/meta-arguments/count.html
   # https://www.terraform.io/docs/language/meta-arguments/for_each.html
-  count = length(local.availability_zones)
-  cidr_block = cidrsubnet("10.250.128.0/17", ceil(log(length(data.aws_availability_zones.available.names), 2)), count.index)
+  count = local.valid_az_count
+  cidr_block = cidrsubnet("10.250.128.0/17", ceil(log(length(local.availability_zones), 2)), count.index)
   vpc_id = aws_vpc.vpc.id
   map_public_ip_on_launch = true
   availability_zone = local.availability_zones[count.index]
@@ -45,7 +65,8 @@ resource aws_internet_gateway igw {
 
 # https://dev.betterdoc.org/infrastructure/2020/02/04/setting-up-a-nat-gateway-on-aws-using-terraform.html
 resource aws_eip nat_gateways {
-  count = length(local.availability_zones)
+  # there's nothing stopping you from making this
+  count = local.valid_az_count
   vpc = true
 }
 
@@ -89,13 +110,13 @@ resource aws_route_table_association private_route_associations {
   route_table_id = aws_route_table.private_route_tables[count.index].id
 }
 
-resource "aws_security_group" "allow_ssh" {
+resource aws_security_group allow_ssh {
   name = "allow_ssh"
   description = "Let people SSH in"
   vpc_id = aws_vpc.vpc.id
 }
 
-resource "aws_security_group_rule" "ssh_in" {
+resource aws_security_group_rule ssh_in {
   type = "ingress"
   from_port = 22
   to_port = 22
@@ -104,7 +125,7 @@ resource "aws_security_group_rule" "ssh_in" {
   security_group_id = aws_security_group.allow_ssh.id
 }
 
-resource "aws_security_group_rule" "allow_local" {
+resource aws_security_group_rule allow_local {
   type = "ingress"
   from_port = 0
   to_port = 65535
@@ -113,7 +134,7 @@ resource "aws_security_group_rule" "allow_local" {
   security_group_id = aws_security_group.allow_ssh.id
 }
 
-resource "aws_security_group_rule" "allow_egress" {
+resource aws_security_group_rule allow_egress {
   type = "egress"
   from_port = 0
   to_port = 65535
