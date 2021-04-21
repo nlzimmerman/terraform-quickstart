@@ -1,58 +1,71 @@
 # https://medium.com/@aliatakan/terraform-create-a-vpc-subnets-and-more-6ef43f0bf4c1
 # https://registry.terraform.io/providers/hashicorp/aws/latest/docs
+
+variable vpc_cidr_block {
+  type = string
+  default = "10.250.0.0/16"
+}
+
 resource aws_vpc vpc {
-  cidr_block = "10.250.0.0/16"
+  cidr_block = var.vpc_cidr_block
   enable_dns_support = true
   enable_dns_hostnames = true
 }
 
 data aws_availability_zones available {}
 
-variable availability_zone_names {
+# if this variable is non-empty, it takes strict precedence over az_count
+variable availability_zones_to_use {
   type = list(string)
   default = []
 }
 
-variable az_count {
+# if azs_to_use is unset, we randomly select this many azs from the available zones.
+variable availability_zone_count {
   type = number
   default = 1
 }
 
 resource random_shuffle availability_zones {
-  input = local.valid_availability_zones
-  result_count = local.valid_az_count
+  input = data.aws_availability_zones.available.names
+  result_count = var.availability_zone_count
 }
 
-# If you don't specify availability zones, use all of them.
 locals {
-  valid_availability_zones = length(var.availability_zone_names) == 0 ? data.aws_availability_zones.available.names : var.availability_zone_names
-  valid_az_count = max(min(var.az_count, length(local.valid_availability_zones)), 1)
-  availability_zones = random_shuffle.availability_zones.result
+  az_count = length(var.availability_zones_to_use) == 0 ? var.availability_zone_count : length(var.availability_zones_to_use)
+  availability_zones = length(var.availability_zones_to_use) == 0 ? random_shuffle.availability_zones.result : var.availability_zones_to_use
+  private_cidr_block = cidrsubnet(var.vpc_cidr_block, 1, 0)
+  public_cidr_block = cidrsubnet(var.vpc_cidr_block, 1, 1)
 }
 
 output availability_zones {
-  value = random_shuffle.availability_zones.result
+  value = local.availability_zones
 }
 
-output valid_az_count {
-  value = local.valid_az_count
+output private_subnets {
+  value = zipmap(local.availability_zones, [for i in aws_subnet.private_subnets : i.id])
 }
+
+output public_subnets {
+  value = zipmap(local.availability_zones, [for i in aws_subnet.public_subnets : i.id])
+}
+
 
 resource aws_subnet private_subnets {
   # https://www.terraform.io/docs/language/meta-arguments/count.html
   # https://www.terraform.io/docs/language/meta-arguments/for_each.html
-  count = local.valid_az_count
-  cidr_block = cidrsubnet("10.250.0.0/17", ceil(log(length(local.availability_zones), 2)), count.index)
+  count = local.az_count
+  cidr_block = cidrsubnet(local.private_cidr_block, ceil(log(length(local.availability_zones), 2)), count.index)
   vpc_id = aws_vpc.vpc.id
   map_public_ip_on_launch = false
-  availability_zone = data.aws_availability_zones.available.names[count.index]
+  availability_zone = local.availability_zones[count.index]
 }
 
 resource aws_subnet public_subnets {
   # https://www.terraform.io/docs/language/meta-arguments/count.html
   # https://www.terraform.io/docs/language/meta-arguments/for_each.html
-  count = local.valid_az_count
-  cidr_block = cidrsubnet("10.250.128.0/17", ceil(log(length(local.availability_zones), 2)), count.index)
+  count = local.az_count
+  cidr_block = cidrsubnet(local.public_cidr_block, ceil(log(length(local.availability_zones), 2)), count.index)
   vpc_id = aws_vpc.vpc.id
   map_public_ip_on_launch = true
   availability_zone = local.availability_zones[count.index]
@@ -65,8 +78,7 @@ resource aws_internet_gateway igw {
 
 # https://dev.betterdoc.org/infrastructure/2020/02/04/setting-up-a-nat-gateway-on-aws-using-terraform.html
 resource aws_eip nat_gateways {
-  # there's nothing stopping you from making this
-  count = local.valid_az_count
+  count = local.az_count
   vpc = true
 }
 
