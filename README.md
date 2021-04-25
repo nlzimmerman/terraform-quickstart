@@ -31,12 +31,32 @@ Before you can do anything here, you need to
 
 TODO: write more here. TL;DR: Terraform works by declaring resources that you can think of as instances of classes that take arguments upon instantiation and, if they can be successfully created, have attributes that are computed and can be used as inputs to other objects. Terraform computes the entire state at once: the order in which you declare resources never matters, and terraform will tell you if you declare an infeasible state.
 
-# Networking
+# Step zero: make a network and convince yourself it works
+
+## Networking
 
 AWS networking is a bit confusing. At a high level
 
 1. A VPC is a private network that exists in one [region](https://aws.amazon.com/about-aws/global-infrastructure/regions_az/)
 2. VPCs contain one or more subnets, each of which exist in a single availability zone. Routing between subnets inside a single VPC doesn't require any special work. Subnets can be public or private: resources on public subnets get routable public IPs.
-3. Resources on private subnets don't have a route to the real internet unless you stand up a router in a public subnet. This may or may not be what you want to do — in my case, I need a router because the database I'd be interested in querying if this example represented real work would be outside of the VPC in question.
+3. Resources on public subnets neerd to route their outbound traffic through an internet gateway. VPCs can only have one internet gateway each.
+4. Resources on private subnets don't have a route to the real internet unless you stand up a router (called a NAT gateway) in a public subnet. This may or may not be what you want to do — in my case, I need a router because the database I'd be interested in querying if this example represented real work would be outside of the VPC in question. Or I could have just used a public subnet. The decision to use a private subnet is, fundamentally, a security question. I haven't spent a lot of time investigating the relative costs of maintaining NAT gateways.
+5. All subnets need to be associated with precisely one route table, though a given route table can be associated with more than one subnet. Local VPC routing is handled automatically, but if you want traffic to flow to the real internet, you have to explain how it needs to get there.
+  - Public subnets can route outbound traffic directly to the internet gateway.
+  - Private subnets need to route outbound traffic to a NAT gateway, which ought to be in the same AZ. These NAT gateways themselves sit in public subnets so can pass traffic out to the real internet.
+  - Define route tables by defining the route table, adding rules to it, and then associate it with one or more subnets. Route tables are global across VPCs so it's perfectly possible to, e.g. route to a NAT gateway in a different AZ. Take care not to do that, unless you know why you want to.
+6. You also need security groups: all inbound traffic is blocked by default, and while outbound traffic is permitted, [terraform will remove that egress rule when it makes security groups](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/security_group).
 
-I've declared the VPC in the file `network.tf`.
+I've declared the VPC, the routing tables, and a very simple security group in the file `network.tf`.
+
+## Virtual Machines
+
+You may or may not actually want VMs in your network — we're deploying Lambda functions here, after all, but it's a good, convenient way to test that everything is working.
+
+I've declared a few small Ubuntu VMs, one in each subnet. We have two subnets per availability zone so that means at least two VMs. You sould be able to login to the public VMs from anywhere in the world using the SSH public key you specified
+
+```bash
+ssh -i mykey.pem ubuntu@3.137.185.193
+```
+
+I've done something here that might be over-clever: you can specify the number of availability zones you want to use, as a number, _or_ you can specify the list of availability zones you want to use. If you specify neither, you get one availability zone. If you specify both, the list you specify takes precedence.
