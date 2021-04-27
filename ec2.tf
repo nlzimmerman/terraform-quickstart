@@ -79,6 +79,7 @@ resource aws_instance private_instances {
   tags = {
     Name = "Private instance ${local.availability_zones[count.index]}"
   }
+  iam_instance_profile = aws_iam_instance_profile.ec2_instance_profile.name
 }
 
 output ec2_ip_addresses {
