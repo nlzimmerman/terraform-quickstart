@@ -84,3 +84,126 @@ ec2_ssh_key = "ssh-rsa [a lot of hex]"
 3. The `ec2_ip_addresses` output contains two IP addresses for public machines; the first is public, the second is private. Private machines only have a single IP address. This is intended to be human-readable but I didn't put much thought into.
 
 **You can check out just the networking and the ec2 instances by checking out the `networking` branch and running `terraform apply`.**
+
+# Step 1: Making a secret and getting access to it from EC2.
+
+Our secret is stored in [AWS Secrets Manager](https://aws.amazon.com/secrets-manager/), which encrypts strings and hands them out only to authenticated services.
+
+This secret represents a username and password for a notional database — ideally, you'd want to rotate these passwords, which Secrets Manager supports. (TODO: figure out how to do that, update this to reflect that.) In this example, it's a hardcoded service account, which is still better than setting your credentials in environment variables and a *lot* better than putting your password into your source code.
+
+Secrets consist of the secret itself, and a secret version (which would change if we rotated them). Those are declared at the top of `secrets.tf`, until about line 30.
+
+If you just made the secret, you could retrieve it from the console using your root credentials, but that wouldn't be much of a secret. In order to make it useful, we want to give your other AWS resources permission to retrieve it themselves. To do this, we need to use IAM roles.
+
+I struggled a bit to figure out IAM roles at first, possibly because I'm an impatient reader. [This is the best page I've found.](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_passrole.html)
+
+In Terraform parlance:
+
+1. You need an `aws_iam_role` (a _trust policy_, on the page I just linked) that will say "this is a role that can be assumed by resources that have been associated with it." Common practice is to scope a `aws_iam_role` to just one type of resource, e.g. `ec2.amazonaws.com`.
+2. What roles are allowed to do are set in a `aws_iam_policy` (a _permissions policy_, ibid.), which consists of a policy document. The mapping between `aws_iam_role` and `aws_iam_policy` is *many-to-many*: you attach a policy to a role using a `aws_iam_role_policy_attachment`.
+3. For EC2 instances, you assign roles to instances by first creating a [`aws_iam_instance_profile`](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_switch-role-ec2_instance-profiles.html), assigning the role to that, and then assigning the instance profile to the instance.
+
+Around the internet, you'll see lots of ways to generate policy documents, including manually specifying the JSON
+```
+assume_role_policy = <<EOF
+{
+"Version": "2012-10-17",
+"Statement": [
+  {
+    "Effect": "Allow",
+    "Principal": {
+      "Service": "ec2.amazonaws.com"
+    },
+    "Action": "sts:AssumeRole"
+  }
+]
+}
+EOF
+```
+
+or using jsonencode
+```
+assume_role_policy = jsonencode({
+    "Version" = "2012-10-17",
+    "Statement" = [
+      {
+        "Effect" = "Allow",
+        "Principal" = {
+          "Service" = "ec2.amazonaws.com"
+        },
+        "Action" = "sts:AssumeRole"
+      }
+    ]
+  })
+
+```
+
+I eschew both of those approaches in favor of using [`data.aws_iam_policy_document`](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/iam_policy_document) which includes somewhat better validation. Note that these objects are terraform-specific, and not part of AWS: they still amount to just strings once they're produced
+
+## How IAM roles fit together for EC2
+
+1. The `aws_iam_role` has a _name_ and a _assume_role_policy_, which is just a policy document, as a string. The _assume_role_policy_ tells you who can assume this role.
+2. The `aws_iam_policy` has a _name_ and a _policy_, which is also just a string. The _policy_ says what roles with this policy attached to them can do. Note that in this example, what we're doing is giving permission to access the secret, identified by its id.
+3. The `aws_iam_role_policy_attachment` maps roles to policies by their _ids_.
+4. The `aws_iam_instance_profile` objects has a _name_ and references a _role_ by its id.
+5. You attach an `aws_iam_instance_profile` to an `aws_instance` by its _name_.
+
+In this example, I've given just the VMs in the private subnets the ability to access the secrets — I just did this to show that some machines can access the secret and some can't.
+
+**You can the secrets-rlated changes by checking out the `secrets` branch and running `terraform apply`.**
+
+Check the outputs of this application and make a note of the public IP address of one of your public addresses and a (private) IP address of one of your private instances.
+
+My output is
+```
+ec2_ip_addresses = {
+  "private" = {
+    "us-east-2a" = "10.250.91.98"
+    "us-east-2b" = "10.250.55.118"
+    "us-east-2c" = "10.250.23.69"
+  }
+  "public" = {
+    "us-east-2a" = [
+      "3.137.185.193",
+      "10.250.217.17",
+    ]
+    "us-east-2b" = [
+      "13.58.94.168",
+      "10.250.177.234",
+    ]
+    "us-east-2c" = [
+      "18.188.98.240",
+      "10.250.157.117",
+    ]
+  }
+}
+```
+
+so, assuming I have my SSH key set up, I can first log into a public instance and see if I can access my secret.
+```
+$ ssh -A ubuntu@3.137.185.193
+
+$ aws secretsmanager get-secret-value --region us-east-2 --secret-id example_secret
+Unable to locate credentials. You can configure credentials by running "aws configure".
+```
+
+I can't. If I then go to one of the machines that has been granted access to the secret via IAM:
+
+```
+# run this from your public instance
+$ ssh 10.250.91.98
+
+$ aws secretsmanager get-secret-value --region us-east-2 --secret-id example_secret
+{
+    "ARN": "arn:aws:secretsmanager:us-east-2:762806054286:secret:example_secret-hVHVEQ",
+    "Name": "example_secret",
+    "VersionId": "28DDAE39-3ADF-43BD-8BD7-07F7FF64EAF3",
+    "SecretString": "{\"username\": \"user\", \"password\": \"password\"}",
+    "VersionStages": [
+        "AWSCURRENT"
+    ],
+    "CreatedDate": 1619483796.846
+}
+```
+
+There we are!

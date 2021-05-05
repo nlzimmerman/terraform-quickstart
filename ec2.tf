@@ -79,6 +79,7 @@ resource aws_instance private_instances {
   tags = {
     Name = "Private instance ${local.availability_zones[count.index]}"
   }
+  # access the secrets store described in secrets.tf
   iam_instance_profile = aws_iam_instance_profile.ec2_instance_profile.name
 }
 
