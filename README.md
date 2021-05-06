@@ -182,7 +182,7 @@ ec2_ip_addresses = {
 so, assuming I have my SSH key set up, I can first log into a public instance and see if I can access my secret.
 ```
 $ ssh -A ubuntu@3.137.185.193
-
+$ sudo apt update && apt install -y awscli
 $ aws secretsmanager get-secret-value --region us-east-2 --secret-id example_secret
 Unable to locate credentials. You can configure credentials by running "aws configure".
 ```
@@ -192,7 +192,7 @@ I can't. If I then go to one of the machines that has been granted access to the
 ```
 # run this from your public instance
 $ ssh 10.250.91.98
-
+$ sudo apt update && apt install -y awscli
 $ aws secretsmanager get-secret-value --region us-east-2 --secret-id example_secret
 {
     "ARN": "arn:aws:secretsmanager:us-east-2:762806054286:secret:example_secret-hVHVEQ",
@@ -207,3 +207,57 @@ $ aws secretsmanager get-secret-value --region us-east-2 --secret-id example_sec
 ```
 
 There we are!
+
+# Making a Lamba function that can read the secret
+
+This secret notionally represents a username and password for a database that we want to query with a lambda function. In this example, we won't query any real databases, but let's convince ourselves we can retreive the credentials.
+
+I've written a simple lambda function in `lambda.py` to handle Lambda calls, retrieve the secret, and tell you that everything's good. It follows pretty closely from examples published in the AWS documentation. I'm not going to describe that too much here, because it's fairly straightforward, but I'll describe the terraform code in `lambda.tf`
+
+- We package the python file containing the lambda function into a zip using `data.archive_file`. You could just package it yourself using `zip`. Note that what I've done works because all of its dependencies are included in the runtime on the standard lambda image, but it wouldn't work if we had python dependences that weren't included.
+- We declare the `aws_lambda_function`:
+  + The `filename` references the _zip_ file, which does have to exist but does not need to be created by terraform.
+  + The `handler` is of the format `filename.function_name`
+  + Treat `source_code_hash` argument as non-optional: this is what Terraform watches to decide if the lambda function needs to be updated.
+  + The `timeout` is the number of seconds the function is allowed to run, once deployed, before it times out.
+  + `depends_on` is a Terraform concept: if any of the things that this resource depends on change, recreate the resource. *Warning*: as of this writing, I'm not sure that everything I've said this function depends on is really necessary. It shouldn't hurt thought.
+- For this lambda function to work at all, it needs to access the secret. We do this by
+  + Defining a role (`aws_iam_role.lambda_exec`) that the function can assume.
+  + Attaching the same policy we made for the EC2 instance (`aws_iam_policy.lambda_secretmanager_policy`, whose name gives the game away a bit) to the role. We don't need a new policy because policies and roles have a many-to-many relationship, so we just make a new `aws_iam_role_policy_attachment`.
+- For us to know what this lambda function is doing, we need to let it write CloudWatch logs. To do this, we
+  + Create a cloudwatch log group, whose name is _by definition the same as the name of the lambda function_. This name is stored in the local variable `local.lambda_function_name` to avoid dependency cycles; both the log group and the lambda function reference this variable.
+  + Create a policy that permits creating log groups and writing log streams (`aws_iam_policy.lambda_logging`)
+  + Attach that policy to the same `lambda_exec` role we made for the function.
+- We want to give our existing EC2 instances permission to access the same lambda function. We do this by making the policy `call_lambda_policy` and attaching it to the same role that let our private-network EC2 instances access the secret. (`ec2_secret_role`)
+
+**We can see this working by switching to the `lambda` branch and running `terraform apply`.**
+
+To test, log into a public instance, as in the previous session. You'll see that you can't run the lambda function.
+```
+$ ssh -A ubuntu@3.137.185.193
+$ sudo apt update && apt install -y awscli
+$ $ aws lambda invoke --region us-east-2 --function-name SecureQueryExample out.json
+Unable to locate credentials. You can configure credentials by running "aws configure".
+```
+
+But on the private instance, it will work:
+```
+$ aws lambda invoke --region us-east-2 --function-name SecureQueryExample out.json
+{
+    "StatusCode": 200,
+    "ExecutedVersion": "$LATEST"
+}
+$ cat out.json
+{"statusCode": 200, "headers": {"Content-Type": "text/html; charset=utf-8"}, "body": "\"Successfully retrieved credentials for username user. Query argument was {}\""}
+```
+
+I wrote this function so that it will give your payload back to you, which would probably be useful in the real world
+```
+$ aws lambda invoke --region us-east-2 --function-name SecureQueryExample --payload '{"animal": "possum"}' out.json
+{
+    "StatusCode": 200,
+    "ExecutedVersion": "$LATEST"
+}
+$ cat out.json
+{"statusCode": 200, "headers": {"Content-Type": "text/html; charset=utf-8"}, "body": "\"Successfully retrieved credentials for username user. Query argument was {'animal': 'possum'}\""}
+```

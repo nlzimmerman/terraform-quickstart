@@ -1,6 +1,9 @@
 # We aren't checking in tfvars in this example.
 *.tfvars
 
+# build artifacts
+lambda.zip
+
 # Local .terraform directories
 **/.terraform/*
 
